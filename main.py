@@ -1,26 +1,33 @@
+# Start Server: uvicorn main:app --reload
+
+
+from contextlib import asynccontextmanager
 from typing import Annotated, Optional, List
 from datetime import datetime, date, timedelta, timezone
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 import jwt
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+#from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from pydantic import BaseModel
-from typing import Annotated
+#from typing import Annotated
 from fastapi import Path, Request
-from collections import defaultdict
-from jwt.exceptions import InvalidTokenError
+# from collections import defaultdict
+# from jwt.exceptions import InvalidTokenError
 #from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
 import requests
-
+ 
 from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
+#from fastapi_cache.backends.redis import RedisBackend
 from fastapi_cache.decorator import cache
 
 # ----------------------------------------
 # Datenbankmodelle
 # ----------------------------------------
+from fastapi_cache.backends.redis import RedisBackend       #CACHE
+import redis
+from collections.abc import AsyncIterator
 
 
 class Kunde(SQLModel, table=True):
@@ -61,7 +68,7 @@ class Bestellposition(SQLModel, table=True):
 
 
 
-class KundeCreate(BaseModel):
+class KundeCreate(SQLModel):        #BaseModel
     vorname: str
     nachname: str
     strasse: str
@@ -74,24 +81,24 @@ class KundeCreate(BaseModel):
     rabatt: float
 
 
-class AuftragCreate(BaseModel):
+class AuftragCreate(SQLModel):
     fk_shop: int
 
 
-class BestellpositionCreate(BaseModel):
+class BestellpositionCreate(SQLModel):
     fk_artikel: int
     position: int
     anzahl: int
 
 
-class BestellungRequest(BaseModel):
+class BestellungRequest(SQLModel):
     kunde: KundeCreate
     auftrag: AuftragCreate
     bestellpositionen: List[BestellpositionCreate]
 
 
-class Test_Auth(BaseModel):             # makes the http-Body matches the expected
-    username : str
+class Test_Auth(SQLModel):             # wie die Login-Route die Daten erwartet
+    username : str                      
     password : str
 
 
@@ -108,7 +115,8 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-app = FastAPI()
+
+
 
 
 
@@ -124,11 +132,26 @@ app = FastAPI()
 # ----------------------------------------
 # POST: Bestellung anlegen
 # ----------------------------------------
-class Token(BaseModel):
+
+
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    redis_client = redis.from_url("redis://localhost")
+    FastAPICache.init(RedisBackend(redis_client), prefix="fastapi-cache")
+    yield
+    await redis_client.close()
+
+# app.router.lifespan_context = lifespan
+app = FastAPI(lifespan=lifespan)
+
+
+class Token(BaseModel):                     # Rückgabe nach erfolgreichem Login
     access_token: str
     token_type: str
     
-class TokenData(BaseModel):
+class TokenData(BaseModel):                 # Für die Verifizierung des Tokens
     username: str
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
@@ -153,13 +176,13 @@ def verify_access_token(token: str) -> TokenData:                       #hier wi
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token ungültig oder abgelaufen",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"Authenticate": "Bearer"},
         )
         
         
 
 @app.post("/login/")
-async def login(data:Test_Auth):
+def login(data:Test_Auth):
     #user_data = request.json()
     #token:str=Depends(oauth2_scheme)
     username = data.username
@@ -176,10 +199,10 @@ async def login(data:Test_Auth):
 
 def get_session():
     with Session(engine) as session:
-        yield session
+        yield session                       # Schließt die Session nach der Nutzung automatisch
 
-@app.post("/service_a/", status_code=status.HTTP_201_CREATED)
-def create_bestellung(
+@app.post("/service_a/", status_code=status.HTTP_201_CREATED)       # defining Response Status-Code
+def create_auftrag(
     bestellung: BestellungRequest,
     token: str = Depends(oauth2_scheme),         # Zugriffsschutz
     session: Session = Depends(get_session)      # DB-Verbindung
@@ -198,11 +221,11 @@ def create_bestellung(
         kunde = bestehender_kunde
     else:
         # Neue Kundennummer bestimmen
-        max_kd = session.exec(select(Kunde.kd_nr).order_by(Kunde.kd_nr.desc())).first()
-        neue_kd_nr = (max_kd or 0) + 1
+        # max_kd = session.exec(select(Kunde.kd_nr).order_by(Kunde.kd_nr.desc())).first()
+        # neue_kd_nr = (max_kd or 0) + 1
 
         kunde = Kunde(
-            kd_nr=neue_kd_nr,
+            #kd_nr=neue_kd_nr,
             vorname=bestellung.kunde.vorname,
             nachname=bestellung.kunde.nachname,
             strasse=bestellung.kunde.strasse,
@@ -220,12 +243,12 @@ def create_bestellung(
         session.refresh(kunde)
 
     # 2. Neue Auftragsnummer bestimmen
-    max_auft = session.exec(select(Auftrag.auft_nr).order_by(Auftrag.auft_nr.desc())).first()
-    neue_auft_nr = (max_auft or 0) + 1
+        max_auft = session.exec(select(Auftrag.auft_nr).order_by(Auftrag.auft_nr.desc())).first()
+        neue_auft_nr = (max_auft or 0) + 1
 
     heute = datetime.now()
     neuer_auftrag = Auftrag(
-        auft_nr=neue_auft_nr,
+        #auft_nr=neue_auft_nr,
         bestelldat=heute,
         lieferdat=heute + timedelta(days=3),
         zahlungsziel=heute + timedelta(days=14),
@@ -254,6 +277,7 @@ def create_bestellung(
         "message": "Bestellung erfolgreich erstellt",
         "kunde_id": kunde.kd_nr,
         "auftrag_id": neuer_auftrag.auft_nr,
+        "auftrag_url": f"/get/auft_/{neuer_auftrag.auft_nr}",
         "anzahl_positionen": len(bestellung.bestellpositionen),
         "hinweis": "Kunde wurde wiederverwendet" if bestehender_kunde else "Neuer Kunde angelegt"
     }
@@ -265,10 +289,10 @@ from fastapi import Path
 from fastapi import Depends, HTTPException
 
 @app.get("/service_b/{kd_nr}")
-#cache(expire=60)
+#@cache(expire=60)
 def get_auftraege_inkl_positionen(
     kd_nr: int = Path(..., ge=3, le=800),
-    token: str = Depends(oauth2_scheme),  # 🔒 Token aus Authorization-Header holen
+    token: str = Depends(oauth2_scheme),  # Token aus Authorization-Header holen
     session: Session = Depends(get_session)
 ):
     # Token prüfen (wirft automatisch 401 bei Fehler)
@@ -293,7 +317,8 @@ def get_auftraege_inkl_positionen(
         for pos in positionen:
             auftrag_dict[f"position {pos.position}"] = [{
                 "Anzahl": pos.anzahl,
-                "Artikel Nr.": pos.fk_artikel
+                "Artikel Nr.": pos.fk_artikel,
+                "Artikel_url": f"get/{pos.fk_artikel}"
             }]
         result.append({f"Auftrag {auftrag.auft_nr}": auftrag_dict})
 
