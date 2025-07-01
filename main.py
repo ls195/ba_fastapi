@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-class Token(BaseModel):                     # Rückgabe nach erfolgreichem Login
+class Token(BaseModel):                     # Rückgabe nach erfolgreichem Login; Basemodel ist aus pydantic
     access_token: str
     token_type: str
     
